@@ -4,10 +4,10 @@ Simple example: fetch A-share daily historical prices using Baostock.
 参考 Baostock 官方文档: `http://www.baostock.com/mainContent?file=home.md`
 
 Before running:
-    pip install -r requirements.txt
+    pip install -r scripts/requirements.txt
 
 Then run:
-    python get_akshare_sample.py
+    python src/get_akshare_sample.py
 """
 
 from __future__ import annotations
@@ -76,7 +76,12 @@ def fetch_sample_history() -> None:
     print(df.head())
 
     # Optional: save to CSV for later use
-    output_file = f"{code.replace('.', '')}_daily_{start_date.replace('-', '')}_{end_date.replace('-', '')}.csv"
+    import os
+    output_dir = "data/raw"
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    output_file = f"{output_dir}/{code.replace('.', '')}_daily_{start_date.replace('-', '')}_{end_date.replace('-', '')}.csv"
     df.to_csv(output_file, index=False)
     print(f"\nData saved to: {output_file}")
 

@@ -8,10 +8,10 @@ st.set_page_config(page_title="Quant101 Stock Filter", layout="wide")
 st.title("Quant101 Stock Filter Results")
 
 # 1. Find available result files
-csv_files = sorted(glob.glob("result_*.csv"), reverse=True)
+csv_files = sorted(glob.glob("data/results/result_*.csv"), reverse=True)
 
 if not csv_files:
-    st.warning("No 'result_*.csv' files found in the current directory.")
+    st.warning("No 'result_*.csv' files found in 'data/results/' directory.")
     st.stop()
 
 # 2. Sidebar: Select file to load

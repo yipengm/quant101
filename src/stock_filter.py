@@ -124,7 +124,7 @@ def _safe_baostock_history(
     raise RuntimeError("Unknown error in _safe_baostock_history")
 
 
-def refresh_all_a_share_codes(filepath: str = "a_share_codes.csv") -> pd.DataFrame:
+def refresh_all_a_share_codes(filepath: str = "data/codenameDB/a_share_codes.csv") -> pd.DataFrame:
     """
     从 AkShare 拉取最新的全部 A 股代码 + 名称，并保存到本地 CSV。
 
@@ -137,7 +137,7 @@ def refresh_all_a_share_codes(filepath: str = "a_share_codes.csv") -> pd.DataFra
     return df
 
 
-def get_target_share_codes(filepath: str = "a_share_codes.csv") -> pd.DataFrame:
+def get_target_share_codes(filepath: str = "data/codenameDB/a_share_codes.csv") -> pd.DataFrame:
     """
     获取“待筛选股票池”的代码列表（代码 + 名称）。
 
@@ -404,11 +404,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--codes-file",
         type=str,
-        default="a_share_codes.csv",
+        default="data/codenameDB/a_share_codes.csv",
         help=(
             "CSV file path for the stock code:name universe "
             '(must contain at least a "code" column). '
-            'Used when --code is not provided. Default: "a_share_codes.csv".'
+            'Used when --code is not provided. Default: "data/codenameDB/a_share_codes.csv".'
         ),
     )
     parser.add_argument(
@@ -486,7 +486,10 @@ if __name__ == "__main__":
 
         if results:
             today_str = pd.Timestamp.today().strftime("%Y%m%d")
-            output_file = f"result_{today_str}.csv"
+            output_dir = "data/results"
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            output_file = f"{output_dir}/result_{today_str}.csv"
             df_results = pd.DataFrame(results)
             # 确保列顺序：code, name, interesting, ma5 cross ma30, ma5up, ma10up, ma20up, ma30up, ma5, ma5_prev, ma10, ma10_prev, ma20, ma20_prev, ma30, ma30_prev
             column_order = [
