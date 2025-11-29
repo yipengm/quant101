@@ -81,19 +81,9 @@ def get_target_codes(filepath: str) -> list[str]:
         df = ak.stock_info_a_code_name()
         return df["code"].tolist()
 
-def collect_data(codes_file: str, output_file: str, months: int = 60, max_n: Optional[int] = None):
-    codes = get_target_codes(codes_file)
-    if max_n is not None:
-        codes = codes[:max_n]
-        print(f"Debug mode: limiting to first {max_n} stocks.")
+def collect_data_batch(codes: list[str], output_file: str, period: str = "monthly", start_date: str = "20200101"):
+    print(f"Collecting {period} data for {len(codes)} stocks...")
     
-    print(f"Collecting data for {len(codes)} stocks...")
-
-    # Calculate start date
-    today = pd.Timestamp.today().normalize()
-    start_date_ts = today - pd.DateOffset(months=months)
-    start_date_str = start_date_ts.strftime("%Y%m%d")
-
     all_data = []
     
     lg = bs.login()
@@ -104,22 +94,16 @@ def collect_data(codes_file: str, output_file: str, months: int = 60, max_n: Opt
     try:
         pbar = tqdm(codes)
         for code in pbar:
-            pbar.set_description(f"Fetching {code}")
+            pbar.set_description(f"Fetching {period} {code}")
             try:
                 df = _safe_baostock_history(
                     symbol=code,
-                    period="monthly",
-                    start_date=start_date_str,
+                    period=period,
+                    start_date=start_date,
                     end_date=None,
                     adjust="qfq"
                 )
                 if not df.empty:
-                    # Keep clean code without prefix for consistency if needed
-                    # Baostock returns sh.600519, we might want just 600519
-                    # But let's keep raw for now or strip 'sh.'/'sz.'? 
-                    # Your stock_filter.py uses raw codes (600519).
-                    # Baostock result 'code' column has 'sh.600519'.
-                    # Let's standardize to 600519 to match your codes file.
                     df["code"] = df["code"].apply(lambda x: x.split(".")[-1])
                     
                     # Convert numeric columns
@@ -130,15 +114,11 @@ def collect_data(codes_file: str, output_file: str, months: int = 60, max_n: Opt
                     all_data.append(df)
             except Exception as e:
                 pass # Skip error stocks
-            
-            # Rate limit slightly
-            # time.sleep(0.05) 
     finally:
         bs.logout()
 
     if all_data:
         final_df = pd.concat(all_data, ignore_index=True)
-        # Sort by code and date
         final_df["date"] = pd.to_datetime(final_df["date"])
         final_df = final_df.sort_values(["code", "date"])
         
@@ -146,34 +126,30 @@ def collect_data(codes_file: str, output_file: str, months: int = 60, max_n: Opt
         final_df.to_csv(output_file, index=False)
         print(f"Saved {len(final_df)} rows to {output_file}")
     else:
-        print("No data collected.")
+        print(f"No {period} data collected.")
+
+def collect_all(codes_file: str, max_n: Optional[int] = None):
+    codes = get_target_codes(codes_file)
+    if max_n is not None:
+        codes = codes[:max_n]
+        print(f"Debug mode: limiting to first {max_n} stocks.")
+
+    today = pd.Timestamp.today().normalize()
+    
+    # 1. Monthly Data (60 months)
+    start_date_monthly = (today - pd.DateOffset(months=60)).strftime("%Y%m%d")
+    collect_data_batch(codes, "data/raw/all_monthly_data.csv", "monthly", start_date_monthly)
+    
+    # 2. Weekly Data (160 weeks)
+    start_date_weekly = (today - pd.DateOffset(weeks=160)).strftime("%Y%m%d")
+    collect_data_batch(codes, "data/raw/all_weekly_data.csv", "weekly", start_date_weekly)
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--codes-file", default="data/codenameDB/a_share_codes.csv")
-    parser.add_argument("--output-file", default="data/raw/all_monthly_data.csv")
-    parser.add_argument("--months", type=int, default=60)
     parser.add_argument("--max-stocks", type=int, default=None, help="Debug: limit number of stocks")
     args = parser.parse_args()
 
-    # Quick hack to slice codes if max-stocks is set (by modifying get_target_codes behavior or just slicing list)
-    # I'll just do it here manually if needed or let user control via file.
-    # Actually, let's implement the slicing logic in main for safety.
-    
-    codes = get_target_codes(args.codes_file)
-    if args.max_stocks:
-        codes = codes[:args.max_stocks]
-        # Monkey patch the get function or just pass codes?
-        # Easier to refactor collect_data to accept list of codes.
-    
-    # Refactoring collect_data to take list of codes would be cleaner, but for now I'll just overwrite the file read logic?
-    # No, I'll just call the function as is, and if max-stocks is needed I'll rely on user providing a small file OR
-    # I will duplicate logic slightly. Let's just run it.
-    
-    # Re-implementing call to support max_stocks properly
-    # Let's modify collect_data signature slightly in next step if needed, but for now
-    # I'll stick to the requested functionality.
-    
-    collect_data(args.codes_file, args.output_file, args.months, args.max_stocks)
+    collect_all(args.codes_file, args.max_stocks)
 
