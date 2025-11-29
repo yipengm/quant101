@@ -2,3 +2,4 @@ akshare
 baostock
 streamlit
 streamlit
+tqdm
