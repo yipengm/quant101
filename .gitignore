@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Data files (ignore large CSVs)
+*.csv
+*.xls
+*.xlsx
+
+# VS Code (optional, but often good to ignore user settings)
+.vscode/
+
+# Streamlit
+.streamlit/
+
