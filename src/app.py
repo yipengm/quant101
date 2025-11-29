@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
+import src.factor_service as fs
 
 st.set_page_config(page_title="Quant101 Dynamic Filter", layout="wide")
 st.title("Quant101 Dynamic Stock Filter")
@@ -42,9 +43,13 @@ if df_monthly is None and df_weekly is None:
     st.error(f"No data found. Please run the data collector.")
     st.stop()
 
-# --- Session State for Rules ---
+# --- Session State for Rules & Results ---
 if 'rules' not in st.session_state:
     st.session_state.rules = []
+if 'result_df' not in st.session_state:
+    st.session_state.result_df = None
+if 'calc_msg' not in st.session_state:
+    st.session_state.calc_msg = None
 
 # --- Sidebar: Rule Builder ---
 st.sidebar.header("Rule Builder")
@@ -163,9 +168,14 @@ def compute_and_filter(df_in, rules_subset, prefix="ma"):
     return set(result_codes), df_latest.set_index('code')
 
 
+# --- Trigger Section ---
 if st.button("Calculate & Filter"):
+    # Reset previous results
+    st.session_state.result_df = None
+    st.session_state.calc_msg = None
+    
     if not st.session_state.rules:
-        st.warning("Please add rules.")
+        st.session_state.calc_msg = ("warning", "Please add rules.")
     else:
         with st.spinner("Processing..."):
             # Split rules
@@ -203,18 +213,12 @@ if st.button("Calculate & Filter"):
                 final_codes = valid_codes_m.intersection(valid_codes_w)
             
             if final_codes:
-                st.success(f"Found {len(final_codes)} stocks matching all criteria.")
-                
                 # Prepare display DF
-                # We primarily show Monthly info, plus Weekly info if available
                 final_list = sorted(list(final_codes))
-                
-                # Fetch row data for display
                 res_df = pd.DataFrame({'code': final_list})
                 
                 # Merge names
                 if df_monthly is not None and not df_monthly.empty:
-                     # Get name map from monthly df
                      name_map = df_monthly.groupby('code')['name'].last()
                      res_df = res_df.merge(name_map, on='code', how='left')
                 
@@ -227,11 +231,71 @@ if st.button("Calculate & Filter"):
                     cols_w = [c for c in df_disp_w.columns if c.startswith("wa")]
                     res_df = res_df.merge(df_disp_w[cols_w], on='code', how='left')
                 
-                st.dataframe(res_df, use_container_width=True)
-                
+                st.session_state.result_df = res_df
+                st.session_state.calc_msg = ("success", f"Found {len(final_codes)} stocks matching all criteria.")
             else:
-                st.warning("No stocks found matching ALL criteria.")
-else:
+                st.session_state.calc_msg = ("warning", "No stocks found matching ALL criteria.")
+
+# --- Display Section (Persistent) ---
+if st.session_state.calc_msg:
+    msg_type, msg_text = st.session_state.calc_msg
+    if msg_type == "success":
+        st.success(msg_text)
+    else:
+        st.warning(msg_text)
+
+if st.session_state.result_df is not None:
+    st.dataframe(st.session_state.result_df, use_container_width=True)
+    
+    col_factors, col_save = st.columns([0.5, 0.5])
+    
+    with col_factors:
+        if st.button("⚡ Generate Factors"):
+            with st.spinner("Fetching Baostock factors (Valuation, Quality, Growth)..."):
+                codes = st.session_state.result_df['code'].tolist()
+                df_factors = fs.get_factors(codes)
+                
+                if not df_factors.empty:
+                    # Merge into result_df
+                    # Avoid duplicate cols if user clicks twice (drop existing factor cols if present)
+                    existing_cols = st.session_state.result_df.columns
+                    # Factor cols are likely: peTTM, pbMRQ, roeAvg etc.
+                    # Simple way: drop common columns from result_df before merge, except code
+                    # Actually, merge left.
+                    
+                    # Clean merge
+                    df_base = st.session_state.result_df.copy()
+                    # If we already have factor columns, we might overwrite or duplicate.
+                    # Let's just merge on code.
+                    
+                    # Drop columns in base that appear in factors (except code) to avoid suffixes
+                    cols_to_update = [c for c in df_factors.columns if c != 'code' and c in df_base.columns]
+                    if cols_to_update:
+                        df_base = df_base.drop(columns=cols_to_update)
+                    
+                    df_merged = df_base.merge(df_factors, on='code', how='left')
+                    st.session_state.result_df = df_merged
+                    st.success("Factors generated and added to table!")
+                    st.rerun()
+                else:
+                    st.warning("No factors returned or connection failed.")
+
+    with col_save:
+        if st.button("💾 Save to results folder"):
+            try:
+                today_str = pd.Timestamp.today().strftime("%Y%m%d")
+                csv_filename = f"results_filtered_{today_str}.csv"
+                output_dir = "./data/results"
+                output_path = os.path.join(output_dir, csv_filename)
+                
+                os.makedirs(output_dir, exist_ok=True)
+                st.session_state.result_df.to_csv(output_path, index=False, encoding='utf-8-sig')
+                st.success(f"Saved to `{output_path}`")
+            except Exception as e:
+                st.error(f"Error saving file: {e}")
+
+elif st.session_state.calc_msg is None:
+    # Initial state or reset
     st.info("Configure rules and click Calculate.")
     if df_monthly is not None:
         st.write(f"Monthly Data: {len(df_monthly)} rows")
