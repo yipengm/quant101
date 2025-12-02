@@ -1,13 +1,55 @@
 import streamlit as st
 import pandas as pd
 import os
+import glob
+import re
 import src.factor_service as fs
 
 st.set_page_config(page_title="Quant101 Dynamic Filter", layout="wide")
 st.title("Quant101 Dynamic Stock Filter")
 
-RAW_DATA_MONTHLY = "data/raw/all_monthly_data.csv"
-RAW_DATA_WEEKLY = "data/raw/all_weekly_data.csv"
+DATA_DIR = "data/raw"
+
+def get_available_versions():
+    """Scan data/raw for all_monthly_data_{suffix}.csv and return sorted suffixes."""
+    if not os.path.exists(DATA_DIR):
+        return []
+    
+    # Find all monthly files
+    files = glob.glob(os.path.join(DATA_DIR, "all_monthly_data_*.csv"))
+    versions = set()
+    
+    for f in files:
+        filename = os.path.basename(f)
+        # Match suffix
+        match = re.match(r"all_monthly_data_(.+)\.csv", filename)
+        if match:
+            versions.add(match.group(1))
+            
+    # Also check for the default "all_monthly_data.csv" (no suffix)
+    if os.path.exists(os.path.join(DATA_DIR, "all_monthly_data.csv")):
+        versions.add("Default")
+        
+    return sorted(list(versions), reverse=True) # Latest dates likely first if YYYYMMDD
+
+available_versions = get_available_versions()
+
+# Sidebar: Data Selection
+st.sidebar.header("Data Selection")
+selected_version = st.sidebar.selectbox("Select Data Version", available_versions) if available_versions else None
+
+if selected_version:
+    if selected_version == "Default":
+        RAW_DATA_MONTHLY = os.path.join(DATA_DIR, "all_monthly_data.csv")
+        RAW_DATA_WEEKLY = os.path.join(DATA_DIR, "all_weekly_data.csv")
+    else:
+        RAW_DATA_MONTHLY = os.path.join(DATA_DIR, f"all_monthly_data_{selected_version}.csv")
+        RAW_DATA_WEEKLY = os.path.join(DATA_DIR, f"all_weekly_data_{selected_version}.csv")
+else:
+    # Fallback if no version selected or found
+    RAW_DATA_MONTHLY = os.path.join(DATA_DIR, "all_monthly_data.csv")
+    RAW_DATA_WEEKLY = os.path.join(DATA_DIR, "all_weekly_data.csv")
+
 
 @st.cache_data
 def load_data(monthly_path, weekly_path):
@@ -40,7 +82,7 @@ def load_data(monthly_path, weekly_path):
 df_monthly, df_weekly = load_data(RAW_DATA_MONTHLY, RAW_DATA_WEEKLY)
 
 if df_monthly is None and df_weekly is None:
-    st.error(f"No data found. Please run the data collector.")
+    st.error(f"No data found for version: {selected_version}. Please check your data directory.")
     st.stop()
 
 # --- Session State for Rules & Results ---
