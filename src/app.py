@@ -104,10 +104,10 @@ col1, col2 = st.sidebar.columns(2)
 with col1:
     window_a = st.number_input("Window A", min_value=1, value=5, step=1, key="input_window_a")
 
-operation = st.sidebar.selectbox("Operation", ["Up", "Down", "Cross"], key="input_op")
+operation = st.sidebar.selectbox("Operation", ["Up", "Down", "Cross", "Greater Than", "Less Than"], key="input_op")
 
 window_b = None
-if operation == "Cross":
+if operation in ["Cross", "Greater Than", "Less Than"]:
     with col2:
         window_b = st.number_input("Window B", min_value=1, value=30, step=1, key="input_window_b")
 
@@ -131,8 +131,8 @@ if st.session_state.rules:
     for i, rule in enumerate(st.session_state.rules):
         prefix = "MA" if rule['cadence'] == 'monthly' else "WA"
         
-        if rule['op'] == 'Cross':
-            desc = f"{prefix}({rule['window_a']}) Cross {prefix}({rule['window_b']})"
+        if rule['op'] in ['Cross', 'Greater Than', 'Less Than']:
+            desc = f"{prefix}({rule['window_a']}) {rule['op']} {prefix}({rule['window_b']})"
         else:
             desc = f"{prefix}({rule['window_a']}) {rule['op']}"
         
@@ -202,6 +202,22 @@ def compute_and_filter(df_in, rules_subset, prefix="ma"):
             cross_logic = (df_latest[col_a_prev] <= df_latest[col_b_prev]) & \
                           (df_latest[col_a] > df_latest[col_b])
             current_mask &= cross_logic
+        elif op == "Greater Than":
+            wb = r['window_b']
+            col_b = f"{prefix}{wb}"
+            # We don't strictly need prev for Greater Than logic, but we need col_b valid
+            
+            valid_data_b = df_latest[col_b].notna()
+            current_mask &= valid_data_b
+            current_mask &= (df_latest[col_a] > df_latest[col_b])
+            
+        elif op == "Less Than":
+            wb = r['window_b']
+            col_b = f"{prefix}{wb}"
+            
+            valid_data_b = df_latest[col_b].notna()
+            current_mask &= valid_data_b
+            current_mask &= (df_latest[col_a] < df_latest[col_b])
         
         final_mask &= current_mask
     
