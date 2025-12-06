@@ -42,17 +42,20 @@ if selected_version:
     if selected_version == "Default":
         RAW_DATA_MONTHLY = os.path.join(DATA_DIR, "all_monthly_data.csv")
         RAW_DATA_WEEKLY = os.path.join(DATA_DIR, "all_weekly_data.csv")
+        RAW_DATA_DAILY = os.path.join(DATA_DIR, "all_daily_data.csv")
     else:
         RAW_DATA_MONTHLY = os.path.join(DATA_DIR, f"all_monthly_data_{selected_version}.csv")
         RAW_DATA_WEEKLY = os.path.join(DATA_DIR, f"all_weekly_data_{selected_version}.csv")
+        RAW_DATA_DAILY = os.path.join(DATA_DIR, f"all_daily_data_{selected_version}.csv")
 else:
-    # Fallback if no version selected or found
+    # Fallback
     RAW_DATA_MONTHLY = os.path.join(DATA_DIR, "all_monthly_data.csv")
     RAW_DATA_WEEKLY = os.path.join(DATA_DIR, "all_weekly_data.csv")
+    RAW_DATA_DAILY = os.path.join(DATA_DIR, "all_daily_data.csv")
 
 
 @st.cache_data
-def load_data(monthly_path, weekly_path):
+def load_data(monthly_path, weekly_path, daily_path):
     # Load Monthly
     if os.path.exists(monthly_path):
         df_m = pd.read_csv(monthly_path, dtype={"code": str})
@@ -66,6 +69,13 @@ def load_data(monthly_path, weekly_path):
         df_w['date'] = pd.to_datetime(df_w['date'])
     else:
         df_w = None
+        
+    # Load Daily
+    if os.path.exists(daily_path):
+        df_d = pd.read_csv(daily_path, dtype={"code": str})
+        df_d['date'] = pd.to_datetime(df_d['date'])
+    else:
+        df_d = None
     
     # Load Names
     codes_path = "data/codenameDB/a_share_codes.csv"
@@ -76,12 +86,13 @@ def load_data(monthly_path, weekly_path):
     
     if df_m is not None: df_m['name'] = df_m['code'].map(code_map)
     if df_w is not None: df_w['name'] = df_w['code'].map(code_map)
+    if df_d is not None: df_d['name'] = df_d['code'].map(code_map)
 
-    return df_m, df_w
+    return df_m, df_w, df_d
 
-df_monthly, df_weekly = load_data(RAW_DATA_MONTHLY, RAW_DATA_WEEKLY)
+df_monthly, df_weekly, df_daily = load_data(RAW_DATA_MONTHLY, RAW_DATA_WEEKLY, RAW_DATA_DAILY)
 
-if df_monthly is None and df_weekly is None:
+if df_monthly is None and df_weekly is None and df_daily is None:
     st.error(f"No data found for version: {selected_version}. Please check your data directory.")
     st.stop()
 
@@ -98,26 +109,37 @@ st.sidebar.header("Rule Builder")
 st.sidebar.write("Define a new rule:")
 
 # Cadence Selection
-cadence = st.sidebar.radio("Frequency", ["Monthly (MA)", "Weekly (WA)"], key="input_cadence")
+cadence = st.sidebar.radio("Frequency", ["Monthly (MA)", "Weekly (WA)", "Daily (DA)"], key="input_cadence")
 
 col1, col2 = st.sidebar.columns(2)
 with col1:
     window_a = st.number_input("Window A", min_value=1, value=5, step=1, key="input_window_a")
+    coeff_a = st.number_input("Coeff A (α)", value=1.0, step=0.01, key="input_coeff_a")
 
 operation = st.sidebar.selectbox("Operation", ["Up", "Down", "Cross", "Greater Than", "Less Than"], key="input_op")
 
 window_b = None
+coeff_b = 1.0
 if operation in ["Cross", "Greater Than", "Less Than"]:
     with col2:
         window_b = st.number_input("Window B", min_value=1, value=30, step=1, key="input_window_b")
+        coeff_b = st.number_input("Coeff B (β)", value=1.0, step=0.01, key="input_coeff_b")
 
 if st.sidebar.button("Add Rule"):
-    rule_cadence = "monthly" if "Monthly" in cadence else "weekly"
+    if "Monthly" in cadence:
+        rule_cadence = "monthly"
+    elif "Weekly" in cadence:
+        rule_cadence = "weekly"
+    else:
+        rule_cadence = "daily"
+        
     new_rule = {
         "cadence": rule_cadence,
         "window_a": window_a,
+        "coeff_a": coeff_a,
         "op": operation,
-        "window_b": window_b
+        "window_b": window_b,
+        "coeff_b": coeff_b
     }
     st.session_state.rules.append(new_rule)
     st.toast("Rule added!", icon="✅")
@@ -129,12 +151,20 @@ st.sidebar.subheader("Active Rules")
 
 if st.session_state.rules:
     for i, rule in enumerate(st.session_state.rules):
-        prefix = "MA" if rule['cadence'] == 'monthly' else "WA"
+        if rule['cadence'] == 'monthly':
+            prefix = "MA"
+        elif rule['cadence'] == 'weekly':
+            prefix = "WA"
+        else:
+            prefix = "DA"
+        
+        str_a = f"{rule['coeff_a']}*{prefix}({rule['window_a']})" if rule['coeff_a'] != 1.0 else f"{prefix}({rule['window_a']})"
         
         if rule['op'] in ['Cross', 'Greater Than', 'Less Than']:
-            desc = f"{prefix}({rule['window_a']}) {rule['op']} {prefix}({rule['window_b']})"
+            str_b = f"{rule['coeff_b']}*{prefix}({rule['window_b']})" if rule['coeff_b'] != 1.0 else f"{prefix}({rule['window_b']})"
+            desc = f"{str_a} {rule['op']} {str_b}"
         else:
-            desc = f"{prefix}({rule['window_a']}) {rule['op']}"
+            desc = f"{str_a} {rule['op']}"
         
         col_desc, col_del = st.sidebar.columns([0.8, 0.2])
         col_desc.text(f"{i+1}. {desc}")
@@ -179,45 +209,51 @@ def compute_and_filter(df_in, rules_subset, prefix="ma"):
     for r in rules_subset:
         wa = r['window_a']
         op = r['op']
+        ca = r.get('coeff_a', 1.0)
+        cb = r.get('coeff_b', 1.0)
         
         col_a = f"{prefix}{wa}"
         col_a_prev = f"{prefix}{wa}_prev"
         
+        # Base validation: A must exist
         valid_data = df_latest[col_a].notna() & df_latest[col_a_prev].notna()
         current_mask = valid_data
         
+        # Values adjusted by coefficients
+        val_a_curr = df_latest[col_a] * ca
+        val_a_prev = df_latest[col_a_prev] * ca
+        
         if op == "Up":
-            current_mask &= (df_latest[col_a] > df_latest[col_a_prev])
+            # For Up/Down, we compare the adjusted value to its own previous adjusted value
+            # (Technically ca cancels out if positive, but strict implementation uses it)
+            current_mask &= (val_a_curr > val_a_prev)
         elif op == "Down":
-            current_mask &= (df_latest[col_a] < df_latest[col_a_prev])
-        elif op == "Cross":
+            current_mask &= (val_a_curr < val_a_prev)
+            
+        elif op in ["Cross", "Greater Than", "Less Than"]:
             wb = r['window_b']
             col_b = f"{prefix}{wb}"
             col_b_prev = f"{prefix}{wb}_prev"
             
-            valid_data_b = df_latest[col_b].notna() & df_latest[col_b_prev].notna()
-            current_mask &= valid_data_b
-            
-            # Cross Logic
-            cross_logic = (df_latest[col_a_prev] <= df_latest[col_b_prev]) & \
-                          (df_latest[col_a] > df_latest[col_b])
-            current_mask &= cross_logic
-        elif op == "Greater Than":
-            wb = r['window_b']
-            col_b = f"{prefix}{wb}"
-            # We don't strictly need prev for Greater Than logic, but we need col_b valid
-            
+            # Validation: B must exist
             valid_data_b = df_latest[col_b].notna()
+            if op == "Cross":
+                valid_data_b &= df_latest[col_b_prev].notna()
             current_mask &= valid_data_b
-            current_mask &= (df_latest[col_a] > df_latest[col_b])
             
-        elif op == "Less Than":
-            wb = r['window_b']
-            col_b = f"{prefix}{wb}"
+            val_b_curr = df_latest[col_b] * cb
+            val_b_prev = df_latest[col_b_prev] * cb if op == "Cross" else None
             
-            valid_data_b = df_latest[col_b].notna()
-            current_mask &= valid_data_b
-            current_mask &= (df_latest[col_a] < df_latest[col_b])
+            if op == "Cross":
+                # Cross Logic: (Prev A <= Prev B) AND (Curr A > Curr B)
+                cross_logic = (val_a_prev <= val_b_prev) & (val_a_curr > val_b_curr)
+                current_mask &= cross_logic
+                
+            elif op == "Greater Than":
+                current_mask &= (val_a_curr > val_b_curr)
+                
+            elif op == "Less Than":
+                current_mask &= (val_a_curr < val_b_curr)
         
         final_mask &= current_mask
     
@@ -239,12 +275,15 @@ if st.button("Calculate & Filter"):
             # Split rules
             monthly_rules = [r for r in st.session_state.rules if r['cadence'] == 'monthly']
             weekly_rules = [r for r in st.session_state.rules if r['cadence'] == 'weekly']
+            daily_rules = [r for r in st.session_state.rules if r['cadence'] == 'daily']
             
             valid_codes_m = None
             valid_codes_w = None
+            valid_codes_d = None
             
             df_disp_m = pd.DataFrame()
             df_disp_w = pd.DataFrame()
+            df_disp_d = pd.DataFrame()
 
             # Process Monthly
             if monthly_rules:
@@ -262,22 +301,37 @@ if st.button("Calculate & Filter"):
                 else:
                     valid_codes_w, df_disp_w = compute_and_filter(df_weekly, weekly_rules, prefix="wa")
 
+            # Process Daily
+            if daily_rules:
+                if df_daily is None:
+                    st.error("Daily data missing.")
+                    valid_codes_d = set()
+                else:
+                    valid_codes_d, df_disp_d = compute_and_filter(df_daily, daily_rules, prefix="da")
+
             # Intersect
-            if valid_codes_m is None: 
-                final_codes = valid_codes_w
-            elif valid_codes_w is None:
-                final_codes = valid_codes_m
-            else:
-                final_codes = valid_codes_m.intersection(valid_codes_w)
+            # Logic: Start with the first non-None set, then intersect with others
+            final_codes = None
+            
+            sets_to_intersect = []
+            if valid_codes_m is not None: sets_to_intersect.append(valid_codes_m)
+            if valid_codes_w is not None: sets_to_intersect.append(valid_codes_w)
+            if valid_codes_d is not None: sets_to_intersect.append(valid_codes_d)
+            
+            if sets_to_intersect:
+                final_codes = sets_to_intersect[0]
+                for s in sets_to_intersect[1:]:
+                    final_codes = final_codes.intersection(s)
             
             if final_codes:
                 # Prepare display DF
                 final_list = sorted(list(final_codes))
                 res_df = pd.DataFrame({'code': final_list})
                 
-                # Merge names
-                if df_monthly is not None and not df_monthly.empty:
-                     name_map = df_monthly.groupby('code')['name'].last()
+                # Merge names (Prefer Monthly, then Weekly, then Daily)
+                name_source = df_monthly if df_monthly is not None else (df_weekly if df_weekly is not None else df_daily)
+                if name_source is not None and not name_source.empty:
+                     name_map = name_source.groupby('code')['name'].last()
                      res_df = res_df.merge(name_map, on='code', how='left')
                 
                 # Merge calculated metrics
@@ -288,6 +342,10 @@ if st.button("Calculate & Filter"):
                 if not df_disp_w.empty:
                     cols_w = [c for c in df_disp_w.columns if c.startswith("wa")]
                     res_df = res_df.merge(df_disp_w[cols_w], on='code', how='left')
+
+                if not df_disp_d.empty:
+                    cols_d = [c for c in df_disp_d.columns if c.startswith("da")]
+                    res_df = res_df.merge(df_disp_d[cols_d], on='code', how='left')
                 
                 st.session_state.result_df = res_df
                 st.session_state.calc_msg = ("success", f"Found {len(final_codes)} stocks matching all criteria.")
@@ -359,3 +417,5 @@ elif st.session_state.calc_msg is None:
         st.write(f"Monthly Data: {len(df_monthly)} rows")
     if df_weekly is not None:
         st.write(f"Weekly Data: {len(df_weekly)} rows")
+    if df_daily is not None:
+        st.write(f"Daily Data: {len(df_daily)} rows")

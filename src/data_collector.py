@@ -9,6 +9,7 @@ import baostock as bs
 import akshare as ak
 from tqdm import tqdm
 from typing import Optional
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # Reuse robust fetching logic
 def _safe_baostock_history(
@@ -81,41 +82,61 @@ def get_target_codes(filepath: str) -> list[str]:
         df = ak.stock_info_a_code_name()
         return df["code"].tolist()
 
-def collect_data_batch(codes: list[str], output_file: str, period: str = "monthly", start_date: str = "20200101"):
-    print(f"Collecting {period} data for {len(codes)} stocks...")
+def fetch_batch_worker(codes_subset, period, start_date):
+    """
+    Worker process to fetch a batch of codes.
+    """
+    # Suppress login output if possible, or just let it run
+    bs.login()
+    batch_data = []
+    for code in codes_subset:
+        try:
+            df = _safe_baostock_history(
+                symbol=code,
+                period=period,
+                start_date=start_date,
+                end_date=None,
+                adjust="qfq"
+            )
+            if not df.empty:
+                # Standardize code format (remove sh./sz.)
+                df["code"] = df["code"].apply(lambda x: x.split(".")[-1])
+                
+                # Convert numeric columns
+                cols = ["open", "high", "low", "close", "volume", "amount"]
+                for c in cols:
+                    if c in df.columns:
+                        df[c] = pd.to_numeric(df[c])
+                
+                batch_data.append(df)
+        except Exception:
+            pass # Skip error stocks
+    bs.logout()
+    return batch_data
+
+def collect_data_batch(codes: list[str], output_file: str, period: str = "monthly", start_date: str = "20200101", batch_size: int = 100, max_workers: int = 4):
+    print(f"Collecting {period} data for {len(codes)} stocks (Batch Size: {batch_size}, Workers: {max_workers})...")
     
     all_data = []
     
-    lg = bs.login()
-    if lg.error_code != "0":
-        print(f"Login failed: {lg.error_msg}")
-        return
-
-    try:
-        pbar = tqdm(codes)
-        for code in pbar:
-            pbar.set_description(f"Fetching {period} {code}")
-            try:
-                df = _safe_baostock_history(
-                    symbol=code,
-                    period=period,
-                    start_date=start_date,
-                    end_date=None,
-                    adjust="qfq"
-                )
-                if not df.empty:
-                    df["code"] = df["code"].apply(lambda x: x.split(".")[-1])
-                    
-                    # Convert numeric columns
-                    cols = ["open", "high", "low", "close", "volume", "amount"]
-                    for c in cols:
-                        df[c] = pd.to_numeric(df[c])
-                        
-                    all_data.append(df)
-            except Exception as e:
-                pass # Skip error stocks
-    finally:
-        bs.logout()
+    # Chunk the codes
+    chunks = [codes[i:i + batch_size] for i in range(0, len(codes), batch_size)]
+    
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        futures = {executor.submit(fetch_batch_worker, chunk, period, start_date): chunk for chunk in chunks}
+        
+        # Progress bar
+        with tqdm(total=len(codes), desc=f"Fetching {period}") as pbar:
+            for future in as_completed(futures):
+                chunk = futures[future]
+                try:
+                    results = future.result()
+                    all_data.extend(results)
+                except Exception as e:
+                    print(f"Batch failed: {e}")
+                finally:
+                    pbar.update(len(chunk))
 
     if all_data:
         final_df = pd.concat(all_data, ignore_index=True)
@@ -128,28 +149,51 @@ def collect_data_batch(codes: list[str], output_file: str, period: str = "monthl
     else:
         print(f"No {period} data collected.")
 
-def collect_all(codes_file: str, max_n: Optional[int] = None):
-    codes = get_target_codes(codes_file)
-    if max_n is not None:
-        codes = codes[:max_n]
-        print(f"Debug mode: limiting to first {max_n} stocks.")
-
-    today = pd.Timestamp.today().normalize()
-    
-    # 1. Monthly Data (60 months)
-    start_date_monthly = (today - pd.DateOffset(months=60)).strftime("%Y%m%d")
-    collect_data_batch(codes, "data/raw/all_monthly_data.csv", "monthly", start_date_monthly)
-    
-    # 2. Weekly Data (160 weeks)
-    start_date_weekly = (today - pd.DateOffset(weeks=160)).strftime("%Y%m%d")
-    collect_data_batch(codes, "data/raw/all_weekly_data.csv", "weekly", start_date_weekly)
+def collect_all(codes_file: str, max_n: Optional[int] = None, batch_size: int = 100):
+    # Legacy wrapper
+    # This is only kept if other scripts import it, but the logic is mainly in __main__ now
+    # We'll just pass through to main logic if needed, or leave as is for reference
+    pass
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--codes-file", default="data/codenameDB/a_share_codes.csv")
     parser.add_argument("--max-stocks", type=int, default=None, help="Debug: limit number of stocks")
+    parser.add_argument("--batch-size", type=int, default=100, help="Number of stocks per batch")
+    parser.add_argument("--max-workers", type=int, default=4, help="Number of parallel workers")
+    
+    # Filter flags
+    parser.add_argument("--monthly", action="store_true", help="Collect monthly data")
+    parser.add_argument("--weekly", action="store_true", help="Collect weekly data")
+    parser.add_argument("--daily", action="store_true", help="Collect daily data")
+    
     args = parser.parse_args()
 
-    collect_all(args.codes_file, args.max_stocks)
+    # If no specific flags are set, collect all
+    collect_all_types = not (args.monthly or args.weekly or args.daily)
+    
+    codes = get_target_codes(args.codes_file)
+    if args.max_stocks is not None:
+        codes = codes[:args.max_stocks]
+        print(f"Debug mode: limiting to first {args.max_stocks} stocks.")
 
+    today = pd.Timestamp.today().normalize()
+    
+    # 1. Monthly
+    if collect_all_types or args.monthly:
+        start_date_monthly = (today - pd.DateOffset(months=60)).strftime("%Y%m%d")
+        collect_data_batch(codes, "data/raw/all_monthly_data.csv", "monthly", start_date_monthly, 
+                        batch_size=args.batch_size, max_workers=args.max_workers)
+    
+    # 2. Weekly
+    if collect_all_types or args.weekly:
+        start_date_weekly = (today - pd.DateOffset(weeks=160)).strftime("%Y%m%d")
+        collect_data_batch(codes, "data/raw/all_weekly_data.csv", "weekly", start_date_weekly, 
+                        batch_size=args.batch_size, max_workers=args.max_workers)
+
+    # 3. Daily
+    if collect_all_types or args.daily:
+        start_date_daily = (today - pd.DateOffset(days=60)).strftime("%Y%m%d")
+        collect_data_batch(codes, "data/raw/all_daily_data.csv", "daily", start_date_daily, 
+                        batch_size=args.batch_size, max_workers=args.max_workers)
